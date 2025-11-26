@@ -1,6 +1,6 @@
 # Active Directory join scripts
 
-This project contains shell scripts to automate joining a Linux machine to an Active Directory domain and optionally configure an automatic CIFS share mount.
+This project contains shell scripts to automate joining a Linux machine to an Active Directory domain with advanced network shares and sudo permissions configuration.
 
 ## Prerequisites
 
@@ -11,134 +11,240 @@ This project contains shell scripts to automate joining a Linux machine to an Ac
 
 ## Contents
 
-- `join_ad.sh`: main non interactive script for AD domain join, optional network share mounting, optional domain autodetection and optional SSSD tuning.
-- `join_ad_interactive.sh`: interactive version that asks for required information step by step.
-- `join_ad.conf`: optional external configuration file used by `join_ad.sh`.
+- `Linux-AD.sh`: main interactive script for AD domain join with shares and sudo groups configuration
+- `Linux-AD.conf`: external configuration file for non-interactive usage
+- `ressources/`: directory containing modular scripts
+  - `backup.sh`: backup/restore functions for configuration files
+  - `share.sh`: automatic network shares configuration with PAM mount and Kerberos
+  - `sudo_groupes.sh`: Active Directory sudo groups configuration
+- `shares.conf`: network shares configuration file (advanced format)
 
-## join_ad.sh
+## Linux-AD.sh
 
-### 1. Basic usage
+### 1. Interactive usage
 
 1. Make the script executable:
-   - `chmod +x join_ad.sh`
+   - `chmod +x Linux-AD.sh`
 
-2. Either edit variables at the top of the script **or** use `join_ad.conf` (recommended).
+2. Run the script as root:
+   - `sudo ./Linux-AD.sh`
 
-Core variables used by the script:
+The script will interactively ask for:
+- The AD domain name (example `mydomain.local`)
+- The AD account with permission to join the machine to the domain
+- The domain controller IP address (DNS server)
+- Whether to configure automatic network shares mounting
+- Whether to configure Active Directory sudo groups
 
-- `DOMAIN`: AD domain name (for example `mydomain.local`)
+### 2. Usage with configuration file
+
+1. Create/edit the `Linux-AD.conf` file with your parameters:
+
+Core variables:
+
+- `DOMAIN`: AD domain name (example `mydomain.local`)
 - `AD_USER`: AD account with permission to join the machine to the domain
 - `DNS_SERVER`: IP address of the domain controller (AD DNS server)
 
-3. (Optional) Configure automatic mounting of a CIFS share:
+Network shares options:
 
-- `ENABLE_SHARE_MOUNT`:
-  - `no`: no share is mounted
-  - `yes`: enable automatic configuration of a network share
-- `SHARE_SERVER`: hostname or IP of the file server (for example `filesrv01`)
-- `SHARE_NAME`: share name (for example `Services`)
-- `MOUNT_POINT`: local mount point (for example `/mnt/services`)
+- `ENABLE_SHARE`: `Y` to enable, `N` to disable (default)
+- `SHARE_SERVER`: hostname or IP of the file server (example `filesrv01`)
+- `SHARE_NAME`: share name (example `Services`)
 - `SHARE_DOMAIN`: domain used to authenticate to the share (default `DOMAIN`)
 - `SHARE_USER`: AD user used to access the share (default `AD_USER`)
-- `SHARE_CREDENTIALS_FILE`: path to the credentials file (default `/etc/samba/creds_share`)
 
-4. Run the script as root:
+Sudo options:
 
-- `sudo ./join_ad.sh`
+- `ENABLE_SUDO`: `Y` to enable, `N` to disable (default)
+- `SUDO_GROUP`: name of the AD group with sudo rights (example `admin`)
+
+2. Run the script with the configuration file:
+   - `sudo ./Linux-AD.sh Linux-AD.conf`
 
 The script will:
 
-- Update the system and install required packages (realmd, sssd, samba, etc.).
+- Update the system and install required packages (realmd, sssd, samba, `cifs-utils`, `libpam-mount`, etc.).
+- Try to automatically fix `apt` repositories if `apt update` fails (add Ubuntu 24.04 LTS repositories then retry).
 - Configure DNS to point to the domain controller.
-- Optionally autodetect the domain using `realm discover` (see below).
-- Discover and join the domain using `realm`.
+- Discover and join the domain using `realm` (handles case where machine is already joined).
 - Enable automatic creation of `home` directories for AD users.
 - Restart `sssd` and allow domain users (`realm permit --all`).
-- Optionally tune SSSD configuration (see below).
+- Configure AD sudo groups if enabled.
+- Configure network shares with PAM mount and Kerberos if enabled.
 
-If `ENABLE_SHARE_MOUNT="yes"`:
+### 3. Network shares configuration
 
-- Create a local mount point.
-- Create a protected credentials file (if missing) to access the CIFS share.
-- Add an entry in `/etc/fstab` to mount the share automatically.
-- Run `mount -a` to mount the share immediately.
+If `ENABLE_SHARE="Y"`:
 
-### 2. External configuration file: join_ad.conf
-n+
-`join_ad.sh` loads the optional file `join_ad.conf` from the same directory if it exists. This file can override default variables without editing the script.
+The script uses `ressources/share.sh` to configure PAM mount with Kerberos authentication:
+- Installs `libpam-mount`
+- Configures `/etc/security/pam_mount.conf.xml` for automatic shares mounting
+- Adds PAM mount to PAM services (`common-auth`, `common-session`, `common-password`)
+- Shares are mounted in `/mnt/%(USER)/[share_name]` with Kerberos authentication
+- No credentials file needed (uses Kerberos tickets)
 
-Example:
+### 4. Sudo groups configuration
+
+If `ENABLE_SUDO="Y"`:
+
+The script uses `ressources/sudo_groupes.sh` to:
+- Create entries in `/etc/sudoers.d/ad_groups`
+- Grant full sudo rights without password to specified AD groups
+- Format: `%group@domain ALL=(ALL:ALL) NOPASSWD: ALL`
+
+### 5. External configuration file: Linux-AD.conf
+
+`Linux-AD.sh` can load an external configuration file passed as argument. This file can override default variables without editing the script.
+
+Complete example:
 
 ```bash
+# Main configuration
 DOMAIN="mydomain.local"
 AD_USER="Administrator"
-DNS_SERVER="192.168.0.10"
+DNS_SERVER="192.168.0.1"
 
-ENABLE_REALM_AUTODETECT="yes"
-ENABLE_SSSD_TUNING="yes"
-USE_FQDN_LOGINS="no"
-OVERRIDE_HOMEDIR="/home/%u"
-ACCESS_PROVIDER="simple"
-LOG_ENABLED="yes"
-LOG_FILE="/var/log/join_ad.log"
+# Shares configuration
+ENABLE_SHARE="Y"
+SHARE_SERVER="filesrv01"
+SHARE_NAME="Services"
+SHARE_DOMAIN="mydomain.local"
+SHARE_USER="Administrator"
+
+# Sudo configuration
+ENABLE_SUDO="Y"
+SUDO_GROUP="admin"
 ```
 
-When `LOG_ENABLED="yes"`, both `join_ad.sh` and `join_ad_interactive.sh` will write all output to `LOG_FILE` while still printing it on screen.
+Usage with configuration:
+```bash
+sudo ./Linux-AD.sh Linux-AD.conf
+```
 
-### 3. Domain autodetection
+## Modular scripts in ressources/
 
-The variable `ENABLE_REALM_AUTODETECT` controls whether the script tries to detect the domain automatically using `realm discover`:
+### backup.sh
 
-- `ENABLE_REALM_AUTODETECT="no"` (default): the `DOMAIN` value is used as is.
-- `ENABLE_REALM_AUTODETECT="yes"`: the script runs `realm discover` and, if a realm is found, replaces `DOMAIN` with the detected value.
+Backup and restore functions for critical configuration files. Used by other scripts to secure modifications.
 
-### 4. Optional SSSD tuning
+### share.sh
 
-If `ENABLE_SSSD_TUNING="yes"`, `join_ad.sh` applies additional SSSD configuration inspired by the ADconnection.sh script. Before changing anything it creates backup copies of:
-
-- `/etc/sssd/sssd.conf`
-- `/etc/nsswitch.conf`
-
-Main options:
-
-- `USE_FQDN_LOGINS`:
-  - `no`: use short usernames (`user`) instead of `user@domain` where possible.
-- `OVERRIDE_HOMEDIR`:
-  - pattern used for home directories (for example `/home/%u`).
-- `ACCESS_PROVIDER`:
-  - provider value for SSSD access (for example `ad` or `simple`).
-
-The script then restarts `sssd`.
-
-## join_ad_interactive.sh
-
-`join_ad_interactive.sh` provides an interactive way to join the machine to the domain.
-
-It will:
-
-- Ask for the domain name, AD user, domain controller IP.
-- Ask whether to configure an automatic CIFS share mount, and if yes, ask for all required share parameters.
-- Install required packages, configure DNS, discover and join the domain.
-- Enable automatic home directory creation and configure the share mount.
-
-Usage:
+Standalone script to configure network shares with PAM mount and Kerberos:
 
 ```bash
-chmod +x join_ad_interactive.sh
-sudo ./join_ad_interactive.sh
+# Single share usage
+bash ressources/share.sh filesrv01 Services
+
+# Multiple shares usage
+bash ressources/share.sh filesrv01 "Services Common Projects"
 ```
+
+Features:
+- Kerberos authentication (no credentials files)
+- Automatic mounting on user login
+- Automatic unmounting on logout
+- Mount points: `/mnt/%(USER)/[share_name]`
+
+### sudo_groupes.sh
+
+Standalone script to configure Active Directory sudo groups:
+
+```bash
+# Single group
+bash ressources/sudo_groupes.sh mydomain.local admin
+
+# Multiple groups
+bash ressources/sudo_groupes.sh mydomain.local admin "IT Support" "Domain Admins"
+```
+
+Creates entries in `/etc/sudoers.d/ad_groups` with full rights without password.
+
+## shares.conf file
+
+Advanced configuration file for shares (not directly used by Linux-AD.sh but useful for reference):
+
+Format: `share_name:mount_point:server`
+
+Examples:
+```
+homes:/mnt/%(USER):filesrv01
+shared:/mnt/shared:filesrv01
+projects:/mnt/projects/%(USER):filesrv01
+admin:/mnt/admin:filesrv01
+```
+
+Supported variables:
+- `%(USER)`: replaced by username
+- Optional server: uses default server if not specified
+
+## Kerberos authentication for shares
+
+Unlike the old version that used CIFS credentials files, the new version uses integrated Kerberos authentication:
+
+- **Advantages**: No passwords stored in clear text, single sign-on (SSO), enhanced security
+- **How it works**: Kerberos tickets obtained during user login are reused to mount shares
+- **Configuration**: Automatically managed by PAM mount with `sec=krb5` option
+- **Mount points**: `/mnt/%(USER)/[share_name]` (automatically created)
 
 ## Security
 
-- The credentials file for CIFS shares is created with restrictive permissions (`chmod 600`).
-- Configuration files are backed up before SSSD tuning.
-- Do not share the credentials file and review your backup and export policies for the machine.
+- **No credentials files**: Kerberos authentication eliminates the need to store passwords
+- **Restrictive permissions**: Modified configuration files have appropriate permissions
+- **Automatic backups**: The `backup.sh` module protects critical files before modification
+- **Share isolation**: Each user has their own mount points
 
-## Tests
+## Troubleshooting
 
-After running the scripts:
+### Domain join verification
 
-- Test login with a domain user (TTY, SSH, graphical interface).
-- If the share option is enabled, verify the mount:
-  - `mount | grep cifs` or `df -h`
-  - Access the `MOUNT_POINT` directory.
+```bash
+# Check domain status
+realm list
+
+# Test AD user
+id user@domain.local
+
+# Check SSSD
+systemctl status sssd
+tail -f /var/log/sssd/sssd.log
+```
+
+### Shares verification
+
+```bash
+# Check PAM mount configuration
+cat /etc/security/pam_mount.conf.xml
+
+# Test manual mounting (requires Kerberos ticket)
+kinit user@domain.local
+mount -t cifs -o sec=krb5,cruid=user //filesrv01/Services /mnt/user/Services
+
+# Check PAM logs
+tail -f /var/log/auth.log
+```
+
+### Common issues
+
+1. **Shares not mounting**: Check that user has valid Kerberos ticket (`klist`)
+2. **Permission denied**: Verify AD user has rights on the network share
+3. **SSSD not starting**: Check configuration in `/etc/sssd/sssd.conf`
+
+## Post-deployment testing
+
+1. **User login**:
+   - Test in TTY: `su - user@domain.local`
+   - Test via SSH: `ssh user@domain.local@machine`
+   - Verify home directory creation
+
+2. **Sudo permissions** (if configured):
+   - `sudo whoami` should return "root" without password
+
+3. **Network shares** (if configured):
+   - Login with AD user
+   - Verify `/mnt/user/[share]` exists and is accessible
+   - `df -h` should show mounted shares
+
+4. **Single sign-on**:
+   - After login, `klist` should show Kerberos ticket
+   - Share access should not prompt for password
