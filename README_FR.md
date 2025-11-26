@@ -1,144 +1,250 @@
 # Scripts de jonction au domaine Active Directory
 
-Ce projet contient des scripts shell pour automatiser la jonction dune machine Linux a un domaine Active Directory et, optionnellement, configurer un montage automatique dun partage CIFS.
+Ce projet contient des scripts shell pour automatiser la jonction d'une machine Linux à un domaine Active Directory avec configuration avancée des partages réseau et des permissions sudo.
 
-## Prerequis
+## Prérequis
 
 - Distribution Linux de type Debian/Ubuntu
-- Acces root (ou `sudo`)
+- Accès root (ou `sudo`)
 - Un compte Active Directory ayant le droit de joindre des machines au domaine
-- Acces reseau au controleur de domaine et eventuellement au serveur de fichiers
+- Accès réseau au contrôleur de domaine et éventuellement au serveur de fichiers
 
 ## Contenu
 
-- `join_ad.sh` : script principal non interactif pour la jonction au domaine AD, le montage de partage reseau optionnel, la detection de domaine optionnelle et le tuning SSSD optionnel.
-- `join_ad_interactive.sh` : version interactive qui demande les informations necessaires etapes par etapes.
-- `join_ad.conf` : fichier de configuration externe optionnel utilise par `join_ad.sh`.
+- `Linux-AD.sh` : script principal interactif pour la jonction au domaine AD avec configuration des partages et groupes sudo
+- `Linux-AD.conf` : fichier de configuration externe pour une utilisation non interactive
+- `ressources/` : répertoire contenant les scripts modulaires
+  - `backup.sh` : fonctions de sauvegarde/restauration des fichiers de configuration
+  - `share.sh` : configuration automatique des partages réseau avec PAM mount et Kerberos
+  - `sudo_groupes.sh` : configuration des groupes sudo Active Directory
+- `shares.conf` : fichier de configuration des partages réseau (format avancé)
 
-## join_ad.sh
+## Linux-AD.sh
 
-### 1. Utilisation de base
+### 1. Utilisation interactive
 
 1. Rendre le script executable :
-   - `chmod +x join_ad.sh`
+   - `chmod +x Linux-AD.sh`
 
-2. Soit adapter les variables en haut du script, soit utiliser `join_ad.conf` (recommande).
+2. Lancer le script en root :
+   - `sudo ./Linux-AD.sh`
 
-Variables principales utilisees :
+Le script vous demandera interactivement :
+- Le nom du domaine AD (exemple `mondomaine.local`)
+- Le compte AD ayant les droits pour joindre la machine au domaine
+- L'adresse IP du contrôleur de domaine (serveur DNS AD)
+- Si vous souhaitez configurer un montage automatique de partages réseau
+- Si vous souhaitez configurer des groupes sudo Active Directory
+
+### 2. Utilisation avec fichier de configuration
+
+1. Créer/modifier le fichier `Linux-AD.conf` avec vos paramètres :
+
+Variables principales :
 
 - `DOMAIN` : nom du domaine AD (exemple `mondomaine.local`)
 - `AD_USER` : compte AD ayant les droits pour joindre la machine au domaine
-- `DNS_SERVER` : adresse IP du controleur de domaine (serveur DNS AD)
+- `DNS_SERVER` : adresse IP du contrôleur de domaine (serveur DNS AD)
 
-3. (Optionnel) Configuration du montage automatique dun partage CIFS :
+Options de partage réseau :
 
-- `ENABLE_SHARE_MOUNT` :
-  - `no` : aucun partage nest monte
-  - `yes` : active la configuration automatique dun partage reseau
+- `ENABLE_SHARE` : `Y` pour activer, `N` pour désactiver (défaut)
 - `SHARE_SERVER` : nom ou IP du serveur de fichiers (exemple `filesrv01`)
 - `SHARE_NAME` : nom du partage (exemple `Services`)
-- `MOUNT_POINT` : point de montage local (exemple `/mnt/services`)
-- `SHARE_DOMAIN` : domaine utilise pour lautentification au partage (par defaut `DOMAIN`)
-- `SHARE_USER` : utilisateur AD utilise pour acceder au partage (par defaut `AD_USER`)
-- `SHARE_CREDENTIALS_FILE` : chemin du fichier de credentials (par defaut `/etc/samba/creds_share`)
+- `SHARE_DOMAIN` : domaine utilisé pour l'authentification au partage (par défaut `DOMAIN`)
+- `SHARE_USER` : utilisateur AD utilisé pour accéder au partage (par défaut `AD_USER`)
 
-4. Lancer le script en root :
+Options sudo :
 
-- `sudo ./join_ad.sh`
+- `ENABLE_SUDO` : `Y` pour activer, `N` pour désactiver (défaut)
+- `SUDO_GROUP` : nom du groupe AD ayant droits sudo (exemple `admin`)
+
+2. Lancer le script avec le fichier de configuration :
+   - `sudo ./Linux-AD.sh Linux-AD.conf`
 
 Le script :
 
-- Met a jour le systeme et installe les paquets necessaires (realmd, sssd, samba, etc.).
-- Configure le DNS pour pointer vers le controleur de domaine.
-- Peut detecter automatiquement le domaine via `realm discover` (voir ci dessous).
-- Decouvre et joint le domaine via `realm`.
-- Active la creation automatique des dossiers `home` pour les utilisateurs AD.
-- Redemarre `sssd` et autorise les utilisateurs du domaine (`realm permit --all`).
-- Peut appliquer un tuning SSSD optionnel (voir ci dessous).
+- Met à jour le système et installe les paquets nécessaires (realmd, sssd, samba, `cifs-utils`, `libpam-mount`, etc.).
+- Tente une réparation automatique des dépôts `apt` si `apt update` échoue (ajout des dépôts Ubuntu 24.04 LTS puis nouvel essai).
+- Configure le DNS pour pointer vers le contrôleur de domaine.
+- Découvre et joint le domaine via `realm` (gère le cas où la machine est déjà jointe au domaine).
+- Active la création automatique des dossiers `home` pour les utilisateurs AD.
+- Redémarre `sssd` et autorise les utilisateurs du domaine (`realm permit --all`).
+- Configure les groupes sudo AD si activé.
+- Configure les partages réseau avec PAM mount et Kerberos si activé.
 
-Si `ENABLE_SHARE_MOUNT="yes"` :
+### 3. Configuration des partages réseau
 
-- Cree un point de montage local.
-- Cree un fichier de credentials protege (si absent) pour l acces au partage CIFS.
-- Ajoute une entree dans `/etc/fstab` pour monter automatiquement le partage.
-- Lance `mount -a` pour monter le partage immediatement.
+Si `ENABLE_SHARE="Y"` :
 
-### 2. Fichier de configuration externe : join_ad.conf
+Le script utilise `ressources/share.sh` pour configurer PAM mount avec authentification Kerberos :
+- Installe `libpam-mount`
+- Configure `/etc/security/pam_mount.conf.xml` pour monter automatiquement les partages
+- Ajoute PAM mount dans les services PAM (`common-auth`, `common-session`, `common-password`)
+- Les partages sont montés dans `/mnt/%(USER)/[nom_partage]` avec authentification Kerberos
+- Aucun fichier de credentials n'est nécessaire (utilisation de tickets Kerberos)
 
-`join_ad.sh` charge le fichier optionnel `join_ad.conf` situe dans le meme repertoire sil existe. Ce fichier permet de surcharger les valeurs par defaut sans modifier le script.
+### 4. Configuration des groupes sudo
 
-Exemple :
+Si `ENABLE_SUDO="Y"` :
+
+Le script utilise `ressources/sudo_groupes.sh` pour :
+- Créer des entrées dans `/etc/sudoers.d/ad_groups`
+- Donner les droits sudo complets sans mot de passe aux groupes AD spécifiés
+- Format : `%groupe@domaine ALL=(ALL:ALL) NOPASSWD: ALL`
+
+### 5. Fichier de configuration externe : Linux-AD.conf
+
+`Linux-AD.sh` peut charger un fichier de configuration externe passé en argument. Ce fichier permet de surcharger les valeurs par défaut sans modifier le script.
+
+Exemple complet :
 
 ```bash
+# Configuration principale
 DOMAIN="mondomaine.local"
 AD_USER="Administrateur"
-DNS_SERVER="192.168.0.10"
+DNS_SERVER="192.168.0.1"
 
-ENABLE_REALM_AUTODETECT="yes"
-ENABLE_SSSD_TUNING="yes"
-USE_FQDN_LOGINS="no"
-OVERRIDE_HOMEDIR="/home/%u"
-ACCESS_PROVIDER="simple"
-LOG_ENABLED="yes"
-LOG_FILE="/var/log/join_ad.log"
+# Configuration des partages
+ENABLE_SHARE="Y"
+SHARE_SERVER="filesrv01"
+SHARE_NAME="Services"
+SHARE_DOMAIN="mondomaine.local"
+SHARE_USER="Administrateur"
+
+# Configuration sudo
+ENABLE_SUDO="Y"
+SUDO_GROUP="admin"
 ```
 
-Quand `LOG_ENABLED="yes"`, les scripts `join_ad.sh` et `join_ad_interactive.sh` ecrivent toute leur sortie dans `LOG_FILE` tout en continuant a lafficher a lecran.
+Utilisation avec configuration :
+```bash
+sudo ./Linux-AD.sh Linux-AD.conf
+```
 
-### 3. Detection de domaine
+## Scripts modulaires dans ressources/
 
-La variable `ENABLE_REALM_AUTODETECT` controle la tentative de detection automatique du domaine via `realm discover` :
+### backup.sh
 
-- `ENABLE_REALM_AUTODETECT="no"` (defaut) : la valeur `DOMAIN` est utilisee telle quelle.
-- `ENABLE_REALM_AUTODETECT="yes"` : le script lance `realm discover` et, si un domaine est trouve, remplace `DOMAIN` par la valeur detectee.
+Fonctions de sauvegarde et restauration automatique des fichiers de configuration critiques. Utilisé par les autres scripts pour sécuriser les modifications.
 
-### 4. Tuning SSSD optionnel
+### share.sh
 
-Si `ENABLE_SSSD_TUNING="yes"`, `join_ad.sh` applique une configuration SSSD supplementaire, inspiree du script ADconnection.sh. Avant toute modification, des sauvegardes sont creees pour :
-
-- `/etc/sssd/sssd.conf`
-- `/etc/nsswitch.conf`
-
-Principales options :
-
-- `USE_FQDN_LOGINS` :
-  - `no` : utilise des noms courts (`user`) au lieu de `user@domaine` lorsque cest possible.
-- `OVERRIDE_HOMEDIR` :
-  - modele de chemin pour les dossiers home (par exemple `/home/%u`).
-- `ACCESS_PROVIDER` :
-  - valeur du provider d acces SSSD (par exemple `ad` ou `simple`).
-
-Le script redemarre ensuite `sssd`.
-
-## join_ad_interactive.sh
-
-`join_ad_interactive.sh` offre une approche interactive pour joindre la machine au domaine.
-
-Il va :
-
-- Demander le nom de domaine, l utilisateur AD et l adresse IP du controleur de domaine.
-- Demander si un montage automatique de partage CIFS doit etre configure et, si oui, poser toutes les questions necessaires.
-- Installer les paquets, configurer le DNS, decouvrir et joindre le domaine.
-- Activer la creation automatique des dossiers home et configurer le montage du partage.
-
-Utilisation :
+Script autonome pour configurer les partages réseau avec PAM mount et Kerberos :
 
 ```bash
-chmod +x join_ad_interactive.sh
-sudo ./join_ad_interactive.sh
+# Utilisation avec un seul partage
+bash ressources/share.sh filesrv01 Services
+
+# Utilisation avec plusieurs partages
+bash ressources/share.sh filesrv01 "Services Commun Projects"
 ```
 
-## Securite
+Caractéristiques :
+- Authentification Kerberos (pas de fichiers de credentials)
+- Montage automatique à la connexion utilisateur
+- Démontage automatique à la déconnexion
+- Points de montage : `/mnt/%(USER)/[nom_partage]`
 
-- Le fichier de credentials pour les partages CIFS est cree avec des droits restrictifs (`chmod 600`).
-- Les fichiers de configuration sont sauvegardes avant le tuning SSSD.
-- Ne partagez pas le fichier de credentials et verifiez vos strategies de sauvegarde et dexport de la machine.
+### sudo_groupes.sh
 
-## Tests
+Script autonome pour configurer les groupes sudo Active Directory :
 
-Apres execution des scripts :
+```bash
+# Un seul groupe
+bash ressources/sudo_groupes.sh mondomaine.local admin
 
-- Tester la connexion avec un utilisateur du domaine (TTY, SSH, interface graphique).
-- Si l option de partage est activee, verifier le montage :
-  - `mount | grep cifs` ou `df -h`
-  - Acces au dossier `MOUNT_POINT`.
+# Plusieurs groupes
+bash ressources/sudo_groupes.sh mondomaine.local admin "IT Support" "Domain Admins"
+```
+
+Crée des entrées dans `/etc/sudoers.d/ad_groups` avec droits complets sans mot de passe.
+
+## Fichier shares.conf
+
+Fichier de configuration avancée pour les partages (non utilisé directement par Linux-AD.sh mais utile pour référence) :
+
+Format : `nom_partage:point_montage:serveur`
+
+Exemples :
+```
+homes:/mnt/%(USER):filesrv01
+shared:/mnt/shared:filesrv01
+projects:/mnt/projects/%(USER):filesrv01
+admin:/mnt/admin:filesrv01
+```
+
+Variables supportées :
+- `%(USER)` : remplacé par le nom d'utilisateur
+- Serveur optionnel : utilise le serveur par défaut si non spécifié
+
+## Authentification Kerberos pour les partages
+
+Contrairement à l'ancienne version qui utilisait des fichiers de credentials CIFS, la nouvelle version utilise l'authentification Kerberos intégrée :
+
+- **Avantages** : Pas de mots de passe stockés en clair, authentification unique (SSO), sécurité renforcée
+- **Fonctionnement** : Les tickets Kerberos obtenus lors de la connexion utilisateur sont réutilisés pour monter les partages
+- **Configuration** : Gérée automatiquement par PAM mount avec l'option `sec=krb5`
+- **Points de montage** : `/mnt/%(USER)/[nom_partage]` (créés automatiquement)
+
+## Sécurité
+
+- **Pas de fichiers de credentials** : L'authentification Kerberos élimine le besoin de stocker des mots de passe
+- **Droits restrictifs** : Les fichiers de configuration modifiés ont des permissions appropriées
+- **Sauvegardes automatiques** : Le module `backup.sh` protège les fichiers critiques avant modification
+- **Isolation des partages** : Chaque utilisateur a ses propres points de montage
+
+## Dépannage
+
+### Vérification de la jonction au domaine
+
+```bash
+# Vérifier l'état du domaine
+realm list
+
+# Tester un utilisateur AD
+id utilisateur@domaine.local
+
+# Vérifier SSSD
+systemctl status sssd
+tail -f /var/log/sssd/sssd.log
+```
+
+### Vérification des partages
+
+```bash
+# Vérifier la configuration PAM mount
+cat /etc/security/pam_mount.conf.xml
+
+# Tester manuellement le montage (nécessite un ticket Kerberos)
+kinit utilisateur@domaine.local
+mount -t cifs -o sec=krb5,cruid=utilisateur //filesrv01/Services /mnt/utilisateur/Services
+
+# Vérifier les logs PAM
+tail -f /var/log/auth.log
+```
+
+### Problèmes courants
+
+1. **Partages ne se montent pas** : Vérifier que l'utilisateur a un ticket Kerberos valide (`klist`)
+2. **Permissions refusées** : Vérifier que l'utilisateur AD a les droits sur le partage réseau
+3. **SSSD ne démarre pas** : Vérifier la configuration dans `/etc/sssd/sssd.conf`
+
+## Tests après déploiement
+
+1. **Connexion utilisateur** :
+   - Tester en TTY : `su - utilisateur@domaine.local`
+   - Tester via SSH : `ssh utilisateur@domaine.local@machine`
+   - Vérifier la création du home directory
+
+2. **Permissions sudo** (si configuré) :
+   - `sudo whoami` devrait retourner "root" sans mot de passe
+
+3. **Partages réseau** (si configurés) :
+   - Se connecter avec un utilisateur AD
+   - Vérifier que `/mnt/utilisateur/[partage]` existe et est accessible
+   - `df -h` devrait monter les partages montés
+
+4. **Authentification unique** :
+   - Après connexion, `klist` devrait montrer un ticket Kerberos
+   - Les accès aux partages ne devraient pas demander de mot de passe
